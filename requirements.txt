@@ -1,0 +1,7 @@
+requests==2.32.3
+python-dotenv==1.0.1
+pdfplumber
+openpyxl
+streamlit
+pdfminer.six 
+pandas
