@@ -30,13 +30,25 @@ def parse_pdf_stream(pdf_file):
     if not lines:
         return None
 
-    # Invoice Number
+    # 1. Broadened Invoice Number and Date Extraction
     invoice_no = "UNKNOWN"
-    for bbox, text in lines:
-        m = re.search(r'PJ-\d+', text)
-        if m:
-            invoice_no = m.group(0)
-            break
+    invoice_date = ""
+
+    # Sort lines top-to-bottom
+    lines_sorted = sorted(lines, key=lambda x: -x[0][1])
+
+    for bbox, text in lines_sorted:
+        # Matches PJ-26000784, MJ-26001420, etc.
+        if invoice_no == "UNKNOWN":
+            m_inv = re.search(r'\b[A-Za-z]{2,4}-\d+\b', text)
+            if m_inv:
+                invoice_no = m_inv.group(0).upper()
+
+        # Matches dates like 22/09/2026 in the top invoice header
+        if not invoice_date and bbox[1] > 600:
+            m_date = re.search(r'\b\d{2}[/-]\d{2}[/-]\d{4}\b', text)
+            if m_date:
+                invoice_date = m_date.group(0)
 
     # Group lines by vertical Y position
     lines_sorted = sorted(lines, key=lambda x: -x[0][1])
@@ -136,13 +148,14 @@ def parse_pdf_stream(pdf_file):
 
     return {
         'invoice_no': invoice_no,
+        'invoice_date': invoice_date,
         'hsn_code': hsn_code,
         'base_description': base_description,
         'categories': groups
     }
 
 
-def generate_excel(consolidated_data):
+def generate_excel(consolidated_data, invoices_list):
     """Creates formatted Excel workbook without KT column, matching manual structure."""
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -231,6 +244,32 @@ def generate_excel(consolidated_data):
     tot_amt.font = bold_font
     tot_amt.number_format = '#,##0.00'
     tot_amt.alignment = Alignment(horizontal="right")
+    
+    tot_amt = ws.cell(row=current_row, column=6, value=f"=SUM(F{start_data_row}:F{end_data_row})")
+    tot_amt.font = bold_font
+    tot_amt.number_format = '#,##0.00'
+    tot_amt.alignment = Alignment(horizontal="right")
+
+    # --- ADD THIS BLOCK HERE ---
+    # 2 blank rows below the TOTAL row
+    current_row += 3  
+
+    # Section Headers
+    ws.cell(row=current_row, column=2, value="Invoice No.").font = bold_font
+    ws.cell(row=current_row, column=3, value="Invoice Date").font = bold_font
+    current_row += 1
+
+    # Print each unique invoice and date
+    for inv in invoices_list:
+        c_inv = ws.cell(row=current_row, column=2, value=inv['invoice_no'])
+        c_inv.alignment = Alignment(horizontal="center")
+
+        c_dt = ws.cell(row=current_row, column=3, value=inv['date'])
+        c_dt.alignment = Alignment(horizontal="center")
+        current_row += 1
+
+
+
 
     # Set practical column widths
     ws.column_dimensions['A'].width = 8
@@ -267,6 +306,16 @@ if uploaded_files:
             parsed['filename'] = file.name
             all_parsed_docs.append(parsed)
 
+    # Collect unique invoice numbers and dates
+    invoices_list = []
+    seen_invoices = set()
+    for doc in all_parsed_docs:
+        inv_no = doc.get('invoice_no', 'UNKNOWN')
+        inv_date = doc.get('invoice_date', '')
+        if inv_no not in seen_invoices:
+            seen_invoices.add(inv_no)
+            invoices_list.append({'invoice_no': inv_no, 'date': inv_date})
+            
     # Consolidation across uploaded invoices
     consolidated = OrderedDict()
     for doc in all_parsed_docs:
@@ -329,7 +378,7 @@ if uploaded_files:
     col3.metric("Total Amount (USD)", f"${df_preview['AMT'].sum():,.2f}")
 
     # Generate Excel download
-    excel_file = generate_excel(consolidated)
+    excel_file = generate_excel(consolidated, invoices_list)
     st.download_button(
         label="📥 Download Consolidated Excel File",
         data=excel_file,
